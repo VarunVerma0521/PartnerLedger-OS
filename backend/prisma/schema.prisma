@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  ADMIN
+  PARTNER
+  VIEWER
+}
+
+enum PaymentMode {
+  CASH
+  ONLINE
+}
+
+enum ExpenseType {
+  BUSINESS
+  PERSONAL
+}
+
+enum PaymentSource {
+  CASH
+  ONLINE
+}
+
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  CANCELLED
+}
+
+enum InsightType {
+  EXPENSE_SPIKE
+  PROFIT_DROP
+  UNUSUAL_SPENDING
+  CASHFLOW_PATTERN
+  SETTLEMENT_RISK
+}
+
+enum AlertType {
+  LOSS_DAY
+  IMBALANCE
+  OVERSPENDING
+  LOW_LIQUIDITY
+  NO_SALES
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum LogAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  ALERT_TRIGGERED
+  SETTLEMENT_RECALCULATED
+  REPORT_GENERATED
+}
+
+model User {
+  id             String         @id @default(uuid()) @db.Uuid
+  email          String         @unique
+  passwordHash   String
+  fullName       String
+  role           UserRole       @default(VIEWER)
+  partnerId      String?        @db.Uuid
+  partner        Partner?       @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  isActive       Boolean        @default(true)
+  lastLoginAt    DateTime?
+  refreshTokens  RefreshToken[]
+  createdSales   Sale[]         @relation("SalesCreatedBy")
+  createdExpenses Expense[]     @relation("ExpensesCreatedBy")
+  logs           Log[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([role])
+  @@index([partnerId])
+  @@index([isActive])
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userAgent  String?
+  ipAddress  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Partner {
+  id                  String       @id @default(uuid()) @db.Uuid
+  name                String
+  slug                String       @unique
+  ownershipPercentage Decimal      @db.Decimal(5, 2)
+  isActive            Boolean      @default(true)
+  wallet              Wallet?
+  users               User[]
+  receivedSales       Sale[]       @relation("SalesReceivedByPartner")
+  paidExpenses        Expense[]    @relation("ExpensesPaidByPartner")
+  settlementsToPay    Settlement[] @relation("SettlementFromPartner")
+  settlementsToReceive Settlement[] @relation("SettlementToPartner")
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  @@index([isActive])
+}
+
+model Wallet {
+  id               String    @id @default(uuid()) @db.Uuid
+  partnerId        String    @unique @db.Uuid
+  partner          Partner   @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  cashBalance      Decimal   @default(0) @db.Decimal(14, 2)
+  onlineBalance    Decimal   @default(0) @db.Decimal(14, 2)
+  totalBalance     Decimal   @default(0) @db.Decimal(14, 2)
+  lastCalculatedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model Sale {
+  id                  String    @id @default(uuid()) @db.Uuid
+  amount              Decimal   @db.Decimal(14, 2)
+  paymentMode         PaymentMode
+  receivedByPartnerId String    @db.Uuid
+  receivedByPartner   Partner   @relation("SalesReceivedByPartner", fields: [receivedByPartnerId], references: [id], onDelete: Restrict)
+  timestamp           DateTime
+  note                String?
+  createdByUserId     String?   @db.Uuid
+  createdByUser       User?     @relation("SalesCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([timestamp])
+  @@index([paymentMode])
+  @@index([receivedByPartnerId, timestamp])
+}
+
+model Expense {
+  id               String        @id @default(uuid()) @db.Uuid
+  amount           Decimal       @db.Decimal(14, 2)
+  category         String
+  paidByPartnerId  String        @db.Uuid
+  paidByPartner    Partner       @relation("ExpensesPaidByPartner", fields: [paidByPartnerId], references: [id], onDelete: Restrict)
+  type             ExpenseType
+  paymentSource    PaymentSource
+  description      String?
+  timestamp        DateTime
+  createdByUserId  String?       @db.Uuid
+  createdByUser    User?         @relation("ExpensesCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([timestamp])
+  @@index([category])
+  @@index([paidByPartnerId, timestamp])
+  @@index([type, paymentSource])
+}
+
+model Settlement {
+  id             String           @id @default(uuid()) @db.Uuid
+  batchKey       String
+  referenceDate  DateTime
+  fromPartnerId  String           @db.Uuid
+  toPartnerId    String           @db.Uuid
+  fromPartner    Partner          @relation("SettlementFromPartner", fields: [fromPartnerId], references: [id], onDelete: Restrict)
+  toPartner      Partner          @relation("SettlementToPartner", fields: [toPartnerId], references: [id], onDelete: Restrict)
+  amount         Decimal          @db.Decimal(14, 2)
+  expectedShare  Decimal          @db.Decimal(14, 2)
+  walletBalance  Decimal          @db.Decimal(14, 2)
+  netBalance     Decimal          @db.Decimal(14, 2)
+  status         SettlementStatus @default(PENDING)
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([batchKey])
+  @@index([referenceDate])
+  @@index([status])
+  @@index([fromPartnerId, toPartnerId])
+}
+
+model DailyReport {
+  id            String    @id @default(uuid()) @db.Uuid
+  reportDate    DateTime  @unique @db.Date
+  totalSales    Decimal   @default(0) @db.Decimal(14, 2)
+  totalExpenses Decimal   @default(0) @db.Decimal(14, 2)
+  profit        Decimal   @default(0) @db.Decimal(14, 2)
+  totalCash     Decimal   @default(0) @db.Decimal(14, 2)
+  totalOnline   Decimal   @default(0) @db.Decimal(14, 2)
+  metadata      Json?
+  generatedAt   DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([reportDate])
+}
+
+model Insight {
+  id            String      @id @default(uuid()) @db.Uuid
+  type          InsightType
+  title         String
+  description   String
+  score         Int?
+  referenceDate DateTime?   @db.Date
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([type])
+  @@index([referenceDate])
+  @@index([createdAt])
+}
+
+model Alert {
+  id            String        @id @default(uuid()) @db.Uuid
+  type          AlertType
+  severity      AlertSeverity
+  title         String
+  message       String
+  referenceDate DateTime?     @db.Date
+  isResolved    Boolean       @default(false)
+  resolvedAt    DateTime?
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([type])
+  @@index([severity])
+  @@index([referenceDate])
+  @@index([isResolved, severity])
+}
+
+model Log {
+  id         String    @id @default(uuid()) @db.Uuid
+  action     LogAction
+  entityType String
+  entityId   String?
+  message    String
+  metadata   Json?
+  userId     String?   @db.Uuid
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt  DateTime  @default(now())
+
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}
